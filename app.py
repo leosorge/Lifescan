@@ -1,3 +1,6 @@
+import re
+from io import BytesIO
+
 import streamlit as st
 
 st.set_page_config(
@@ -131,3 +134,81 @@ with col2:
     for key, label in fasi_ordine:
         desc = profilo_attivo['fasi'][key]
         st.markdown(f"**{label}**\n\n{desc}")
+
+
+IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
+
+
+def query_image_model(prompt: str) -> bytes | None:
+    from huggingface_hub import InferenceClient
+    from streamlit.errors import StreamlitSecretNotFoundError
+
+    try:
+        api_token = st.secrets.get("HF_TOKEN")
+    except (FileNotFoundError, StreamlitSecretNotFoundError):
+        api_token = None
+    if not api_token:
+        st.error("🔑 HF_TOKEN non trovato nei Secrets di Streamlit.")
+        return None
+
+    model = st.secrets.get("HF_IMAGE_MODEL", IMAGE_MODEL)
+    provider = st.secrets.get("HF_IMAGE_PROVIDER", "auto")
+    try:
+        client = InferenceClient(provider=provider, api_key=api_token, timeout=90)
+        image = client.text_to_image(prompt, model=model)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            st.error("Accesso immagini negato: verifica HF_TOKEN e i permessi Inference Providers.")
+        elif status == 402:
+            st.error("Crediti Hugging Face insufficienti per generare immagini.")
+        else:
+            st.error("Il servizio immagini non ha restituito un ritratto. Riprova.")
+        return None
+
+def mostra_ritratto(colonna, momento, scena, prompt_base, immagini):
+    with colonna:
+        st.markdown(f"#### {momento}")
+        if st.button(f"Genera o rigenera — {momento}", key=f"ritratto_{momento}"):
+            with st.spinner("Generazione del ritratto…"):
+                immagine = query_image_model(f"{prompt_base} {scena}")
+            if immagine is not None:
+                immagini[momento] = immagine
+        if momento in immagini:
+            st.image(immagini[momento], caption=momento)
+
+
+st.divider()
+st.subheader("Ritratti prima e dopo l’evento")
+st.caption("Due illustrazioni della stessa scena narrativa in momenti diversi.")
+
+evento = profilo_attivo["fasi"]["46-65 anni (Crisi Critica)"]
+fascia = re.match(r"Crisi a (\d+)(?:-(\d+))? anni", evento)
+eta_ritratto = f"{fascia[1]} to {fascia[2]} years old" if fascia and fascia[2] else (
+    f"{fascia[1]} years old" if fascia else "middle-aged"
+)
+genere = {"M": "man", "F": "woman"}[sesso]
+prompt_base = (
+    f"Photorealistic frontal head-and-shoulders portrait of a fictional {genere}, "
+    f"{eta_ritratto}, oval face, dark wavy hair with a few grey strands, brown eyes, "
+    "dark blue shirt, plain light-grey backdrop, soft daylight. "
+    "Keep these facial features, hair, framing, clothing and lighting consistent."
+)
+
+profilo_ritratti = (nome, eta, sesso, altezza, peso, whr, archetipo)
+if st.session_state.get("profilo_ritratti") != profilo_ritratti:
+    st.session_state.profilo_ritratti = profilo_ritratti
+    st.session_state.ritratti_evento = {}
+
+prima, dopo = st.columns(2)
+mostra_ritratto(
+    prima, "Prima dell’evento", "Just before the story event, calm and composed.",
+    prompt_base, st.session_state.ritratti_evento,
+)
+mostra_ritratto(
+    dopo, "Dopo l’evento", "Shortly after the story event, quieter and visibly tired.",
+    prompt_base, st.session_state.ritratti_evento,
+)
